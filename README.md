@@ -1,6 +1,14 @@
 # 情绪系统 v2（AstrBot 插件）
 
+> **English TL;DR** — An emotion engine for [AstrBot](https://github.com/AstrBotDevs/AstrBot).
+> Four layers (judge → fuzzy → emotion → tone), seven emotions each split into a slow *base*
+> and a fast *pulse* that decay at different rates, multi-label judgment produced by
+> lexical + semantic + context arbitration. **No third-party dependencies.** Docs and code
+> comments are in Chinese; the model is documented in [`docs/`](docs/).
+
 给聊天机器人一套**会自己变化、且能被测量**的情绪。
+
+![面板](docs/images/panel.png)
 
 四层结构，只有一层碰模型：
 
