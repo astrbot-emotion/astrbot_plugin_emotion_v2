@@ -1,0 +1,5 @@
+# 无第三方依赖：只用 AstrBot 自带的 Python 环境。
+#
+# 两个可选能力：
+#   1) LLM 复核     —— 需要 AstrBot 里已配置任意 chat provider
+#   2) embedding 报警 —— 需要在 provider 里配置 embedding_model（如 BAAI/bge-m3）

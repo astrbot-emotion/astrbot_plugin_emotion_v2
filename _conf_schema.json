@@ -1,0 +1,104 @@
+{
+  "llm_review": {
+    "type": "bool",
+    "description": "LLM 复核",
+    "default": true,
+    "hint": "只在“拿不准”的句子上调一次大模型（反讽、关系否定、模糊度高）。关掉则完全靠规则。"
+  },
+  "llm_max_per_hour": {
+    "type": "int",
+    "description": "每小时最多复核次数",
+    "default": 12,
+    "hint": "按会话计算，防止刷屏式调用。"
+  },
+  "llm_timeout": {
+    "type": "int",
+    "description": "复核超时（秒）",
+    "default": 12,
+    "hint": "超时就跳过，不影响主流程。"
+  },
+  "heartbeat": {
+    "type": "object",
+    "description": "心跳（没消息时也让时间走）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用心跳",
+        "default": true,
+        "hint": "每 N 分钟自动跑一次轻量 tick：只做衰减、思的增长、乐底色漂移，不产生事件、不写日志。"
+      },
+      "interval_minutes": {
+        "type": "int",
+        "description": "心跳间隔（分钟）",
+        "default": 15,
+        "hint": "默认 15 分钟。改小更细腻但更耗；改大更省。改完可在面板/接口即时生效。"
+      }
+    }
+  },
+  "idle": {
+    "type": "object",
+    "description": "沉默（时间戳）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用沉默判定",
+        "default": true,
+        "hint": "按上一条消息与本条的时间差计算疏离；关闭后完全忽略间隔。"
+      },
+      "medium_hours": {
+        "type": "int",
+        "description": "中等沉默（小时）",
+        "default": 3,
+        "hint": "超过这个间隔，她会被算作“有点疏离”，乐轻微下降。"
+      },
+      "long_hours": {
+        "type": "int",
+        "description": "长沉默（小时）",
+        "default": 12,
+        "hint": "超过这个间隔，疏离加倍、乐下降更多，重新开口时第一句会偏冷。"
+      }
+    }
+  },
+  "embedding_hint": {
+    "type": "bool",
+    "description": "embedding 报警",
+    "default": true,
+    "hint": "规则拿不准时，用词向量判断这句话是否可疑；只有首名 >=0.82 且领先 >=0.06 才交给 LLM 复核。不参与任何数值计算。"
+  },
+  "inject_budget": {
+    "type": "int",
+    "description": "语气块字数上限",
+    "default": 240,
+    "hint": "追加进 system_prompt 的情绪块最多多少字，超了先砍“感受”，再硬截。0 表示不限。"
+  },
+  "llm_sync_timeout": {
+    "type": "int",
+    "description": "同步复核超时（秒）",
+    "default": 4,
+    "hint": "LLM 为准时会同步等结果；超时就退回规则。默认 4 秒。"
+  },
+  "memory_bridge": {
+    "type": "object",
+    "description": "记忆桥（LivingMemory → 情绪）",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用记忆桥",
+        "default": true,
+        "hint": "只读 LivingMemory 已经注入到本条消息里的记忆，折成思/忧/喜/哀的“底”。不改记忆库、不额外查库。"
+      },
+      "max_new": {
+        "type": "int",
+        "description": "每轮最多计几条",
+        "default": 2,
+        "hint": "按重要性取前几条；记忆只是背景，不是事件。"
+      },
+      "refresh_hours": {
+        "type": "int",
+        "description": "同一条记忆多久后再算一次（小时）",
+        "default": 12,
+        "hint": "防止同一条记忆每条消息都抬一次。默认 12 小时。"
+      }
+    }
+  }
+}

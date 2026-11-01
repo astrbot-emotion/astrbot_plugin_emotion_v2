@@ -1,0 +1,22 @@
+# ── 运行时数据（含真实对话，绝不入库）──
+plugin_data/
+data/
+logs/
+state.json
+state.json.bak*
+inject.json
+mood_share*.json
+embeddings_*.json
+samples.jsonl
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.bak
+*.tmp
+.venv/
+
+# ── 编辑器 ──
+.vscode/
+.idea/
+.DS_Store

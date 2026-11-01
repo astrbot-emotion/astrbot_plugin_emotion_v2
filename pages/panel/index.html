@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>情绪面板 v2</title>
+<style>
+  :root{
+    --bg:#0f1216; --card:#171c22; --line:#242c35; --text:#e6edf3; --dim:#8b98a5;
+    --le:#5aa9e6; --xi:#f2b544; --nu:#e2605a; --ai:#7c8cf8; --ju:#b06ae0; --si:#5acfa0; --you:#c084fc;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.6 "Microsoft YaHei",system-ui,sans-serif;padding:18px}
+  h1{font-size:16px;margin:0 0 14px;font-weight:600;letter-spacing:.5px}
+  .grid{display:grid;grid-template-columns:1.1fr 1fr;gap:14px}
+  @media(max-width:900px){.grid{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px}
+  .card h2{font-size:13px;margin:0 0 10px;color:var(--dim);font-weight:500}
+  .dom{font-size:26px;font-weight:700;margin:2px 0 8px}
+  .sub{color:var(--dim);font-size:12px}
+  .bar{margin:8px 0}
+  .bar .t{display:flex;justify-content:space-between;font-size:12px;color:var(--dim);margin-bottom:3px}
+  .track{height:8px;background:#0b0e12;border-radius:6px;overflow:hidden}
+  .fill{height:100%;border-radius:6px;transition:width .4s ease}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-size:12px;padding:2px 8px;border-radius:10px;background:#0b0e12;border:1px solid var(--line)}
+  .chip b{color:var(--text)}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th,td{text-align:left;padding:6px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:500}
+  td.t{color:var(--dim);white-space:nowrap}
+  .tag{display:inline-block;padding:0 6px;border-radius:8px;background:#0b0e12;border:1px solid var(--line)}
+  .muted{color:var(--dim)}
+  .btn{background:#1f2730;color:var(--text);border:1px solid var(--line);
+       border-radius:8px;padding:5px 12px;font-size:12px;cursor:pointer}
+  .btn:hover{background:#26303b}
+  .row{display:flex;gap:8px;align-items:center;justify-content:space-between}
+  .scroll{max-height:420px;overflow:auto}
+</style>
+</head>
+<body>
+<h1>情绪系统 v2 · <span style="color:#5acfa0">语气注入已接入</span> · UI 3.2</h1>
+
+<div class="grid">
+  <div>
+    <div class="card" id="umoBar" style="padding:10px 14px">
+      <div style="font-size:12px;color:var(--dim);margin-bottom:6px">对话（点一个看她的心情）</div>
+      <div id="umos" style="display:flex;flex-wrap:wrap;gap:8px"></div>
+    </div>
+
+    <div class="card" style="display:flex;align-items:center;gap:10px;padding:10px 14px">
+      <span style="font-size:13px">语气注入</span>
+      <button id="injectBtn" style="cursor:pointer;border:1px solid var(--line);background:#1e2630;
+        color:var(--text);border-radius:8px;padding:4px 12px;font-size:13px">—</button>
+      <span style="color:var(--dim);font-size:12px" id="injectHint">开启后她会按当前情绪调整说话方式</span>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <h2 style="margin:0">她的状态</h2>
+        <button class="btn" id="reset">重置本会话</button>
+      </div>
+      <div class="dom" id="dom">—</div>
+      <div class="sub" id="sub">等待第一条消息…</div>
+      <div id="bars"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>语气杠杆</h2>
+      <div id="tone"></div>
+      <div class="sub" id="toneText" style="margin-top:8px">—</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="card">
+      <h2>模糊层（0–10）</h2>
+      <div class="chips" id="fuzzy"><span class="muted">尚无</span></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>情绪曲线（点上面的情绪名切换）</h2>
+      <div class="chips" id="chartTabs" style="margin-bottom:8px"></div>
+      <div class="sub" id="chartInfo">—</div>
+      <svg id="chart" viewBox="0 0 860 300" preserveAspectRatio="none"
+           style="width:100%;height:300px;display:block"></svg>
+      <div class="sub" id="chartEvents" style="margin-top:8px">—</div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>今日统计</h2>
+      <div class="chips" id="summary"><span class="muted">—</span></div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <h2>最近日志</h2>
+      <div class="scroll">
+        <table id="log"><thead>
+          <tr><th class="t">时间</th><th>他说的</th><th>判定</th><th>她的情绪</th><th>主导</th></tr>
+        </thead><tbody><tr><td colspan="5" class="muted">暂无</td></tr></tbody></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const COLORS = {乐:"--le", 喜:"--xi", 怒:"--nu", 哀:"--ai", 惧:"--ju", 思:"--si", 忧:"--you"};
+const PLUGIN = "astrbot_plugin_emotion_v2";
+
+// 页面在 iframe 里，必须走 AstrBotPluginView（只传端点名，桥会自己拼插件名）
+function bridge() {
+  return window.AstrBotPluginView || window.AstrBotPluginPage || null;
+}
+function parseMaybeJson(v) {
+  if (typeof v === "string") { try { return JSON.parse(v); } catch (e) { return v; } }
+  return v;
+}
+
+function _lsGet(k) {
+  try { return localStorage.getItem(k) || ""; } catch (e) { return ""; }
+}
+function _lsSet(k, v) {
+  try { localStorage.setItem(k, v); } catch (e) {}
+}
+
+let CUR_UMO = _lsGet("emo_umo");
+
+function withUmo(name) { return name; }
+
+async function apiGet(name, extra) {
+  const params = Object.assign({}, extra || {});
+  if (CUR_UMO && name !== "sessions") params.umo = CUR_UMO;
+  const b = bridge();
+  if (b && typeof b.apiGet === "function") {
+    return parseMaybeJson(await b.apiGet(name, params));
+  }
+  const qs = new URLSearchParams(params).toString();
+  const r = await fetch("/api/plug/" + PLUGIN + "/" + name + (qs ? "?" + qs : ""),
+                        {credentials: "same-origin"});
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
+
+async function apiPost(name, body) {
+  const b = bridge();
+  if (b && typeof b.apiPost === "function") {
+    return parseMaybeJson(await b.apiPost(name, body || {}));
+  }
+  const r = await fetch("/api/plug/" + PLUGIN + "/" + name, {
+    method: "POST", credentials: "same-origin",
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})
+  });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return await r.json();
+}
+
+function bar(name, val, max, base) {
+  max = max || 100;
+  const pct = Math.max(0, Math.min(100, (val / max) * 100));
+  const color = getComputedStyle(document.documentElement)
+      .getPropertyValue(COLORS[name] || "--le").trim() || "#5aa9e6";
+  const shown = max === 1 ? Number(val).toFixed(2) : Math.round(val);
+  // 情绪条：底 = 深色实心，冲 = 同色半透明叠在右边
+  let inner;
+  if (base !== undefined && base !== null && max !== 1) {
+    const bPct = Math.max(0, Math.min(pct, (base / max) * 100));
+    inner = `<div style="position:absolute;left:0;top:0;height:100%;width:${bPct}%;
+                    background:${color};border-radius:6px"></div>
+             <div style="position:absolute;left:${bPct}%;top:0;height:100%;
+                    width:${Math.max(0, pct - bPct)}%;background:${color};
+                    opacity:.45;border-radius:6px"></div>`;
+    return `<div class="bar" title="底 ${base.toFixed(1)} · 冲 ${(val - base).toFixed(1)}">
+      <div class="t"><span>${name}</span><span>${shown}
+        <span style="color:var(--dim)">（底${base.toFixed(0)}·冲${Math.max(0, val - base).toFixed(0)}）</span>
+      </span></div>
+      <div class="track" style="position:relative;overflow:hidden">${inner}</div>
+    </div>`;
+  }
+  return `<div class="bar">
+    <div class="t"><span>${name}</span><span>${shown}</span></div>
+    <div class="track"><div class="fill" style="width:${pct}%;background:${color}"></div></div>
+  </div>`;
+}
+
+async function refreshState() {
+  try {
+    const s = await apiGet("state");
+    document.getElementById("dom").textContent = s.dominant || "—";
+    const her = s.her || {};
+    liveHer = her;                       // 曲线右端要用它画"现在"
+    document.getElementById("sub").textContent =
+      `会话 ${s.umo || "?"} · 第 ${s.turns || 0} 句`;
+    const parts = s.parts || {};
+    const baseOf = k => (parts[k] ? parts[k]["底"] : undefined);
+    document.getElementById("bars").innerHTML =
+      bar("喜", her["喜"] || 0, 100, baseOf("喜")) +
+      bar("怒", her["怒"] || 0, 100, baseOf("怒")) +
+      bar("哀", her["哀"] || 0, 100, baseOf("哀")) +
+      bar("乐", her["乐"] || 0, 100, baseOf("乐")) +
+      bar("惧", her["惧"] || 0, 100, baseOf("惧")) +
+      bar("思", her["思"] || 0, 100, baseOf("思")) +
+      bar("忧", her["忧"] || 0, 100, baseOf("忧"));
+
+    const t = s.tone || {};
+    document.getElementById("tone").innerHTML = Object.keys(t)
+      .map(k => bar(k, t[k], 1)).join("");
+    document.getElementById("toneText").textContent = s.tone_text || "—";
+
+    const fz = s.fuzzy || {};
+    const chips = Object.keys(fz).filter(k => fz[k] > 0)
+      .sort((a, b) => fz[b] - fz[a])
+      .map(k => `<span class="chip">${k} <b>${fz[k]}</b></span>`);
+    document.getElementById("fuzzy").innerHTML = chips.join("") || '<span class="muted">尚无</span>';
+  } catch (e) {
+    document.getElementById("sub").textContent = "读取失败：" + (e && e.message ? e.message : e);
+  }
+}
+
+async function refreshSummary() {
+  try {
+    const s = await apiGet("summary");
+    const parts = [`<span class="chip">今日 <b>${s.total || 0}</b> 条</span>`];
+    for (const [k, v] of Object.entries(s.labels || {})) {
+      parts.push(`<span class="chip">${k} <b>${v}</b></span>`);
+    }
+    if (s.fear_events) parts.push(`<span class="chip">威胁事件 <b>${s.fear_events}</b></span>`);
+    if (s.avg_like) parts.push(`<span class="chip">平均喜欢 <b>${s.avg_like}</b></span>`);
+    document.getElementById("summary").innerHTML = parts.join("");
+  } catch (e) {}
+}
+
+async function refreshLog() {
+  try {
+    const d = await apiGet("log");
+    const rows = (d.rows || []).slice(0, 40);
+    const tb = document.querySelector("#log tbody");
+    if (!rows.length) { tb.innerHTML = '<tr><td colspan="5" class="muted">暂无</td></tr>'; return; }
+    tb.innerHTML = rows.map(r => {
+      const j = r.judge || {};
+      const h = r.her || {};
+      const her = `喜${h["喜"]} 怒${h["怒"]} 哀${h["哀"]} 乐${h["乐"]} 惧${h["惧"]} 思${h["思"]??0} 忧${h["忧"]??0}`;
+      const star = r.llm ? " ★" : "";
+      const idle = (r.idle && r.idle.level)
+        ? `<span class="tag" style="margin-left:4px">隔${r.idle.minutes}分</span>` : "";
+      return `<tr>
+        <td class="t">${(r.ts || "").slice(11)}</td>
+        <td>${(r.text || "").slice(0, 34)}</td>
+        <td><span class="tag">${j.label || "?"} ${j.strength ?? ""}${star}</span>${idle}</td>
+        <td class="muted">${her}</td>
+        <td>${r.dominant || ""}</td>
+      </tr>`;
+    }).join("");
+  } catch (e) {}
+}
+
+document.getElementById("reset").onclick = async () => {
+  if (!confirm("重置当前会话的情绪状态？")) return;
+  try { await apiPost("reset", {}); } catch (e) {}
+  refreshAll();
+};
+
+// ================= 情绪曲线 =================
+const EMO7 = ["喜", "怒", "哀", "乐", "惧", "思", "忧"];
+let curEmo = decodeURIComponent((location.hash || "").slice(1)) || "喜";
+if (!["喜","怒","哀","乐","惧","思","忧"].includes(curEmo)) curEmo = "喜";
+let chartRows = [];
+let liveHer = null;      // /state 返回的实时值（心跳会改它，日志不会）
+
+function emoColor(k) {
+  return getComputedStyle(document.documentElement).getPropertyValue("--" + k).trim() || "#5aa9e6";
+}
+
+function buildTabs() {
+  const box = document.getElementById("chartTabs");
+  box.innerHTML = EMO7.map(k => {
+    const vals = chartRows.map(r => (r.her || {})[k] || 0);
+    const peak = vals.length ? Math.max(...vals).toFixed(0) : "-";
+    return `<span class="chip" data-k="${k}" style="cursor:pointer">${k} <b>${peak}</b></span>`;
+  }).join("");
+  box.querySelectorAll(".chip").forEach(el => {
+    el.onclick = () => {
+      curEmo = el.dataset.k;
+      try { location.hash = curEmo; } catch (e) {}
+      drawChart();
+    };
+  });
+}
+
+function drawChart() {
+  document.querySelectorAll("#chartTabs .chip").forEach(el => {
+    const on = el.dataset.k === curEmo;
+    el.style.borderColor = on ? emoColor(el.dataset.k) : "";
+    el.style.background = on ? "#1e2630" : "";
+  });
+
+  const svg = document.getElementById("chart");
+  const info = document.getElementById("chartInfo");
+  const evBox = document.getElementById("chartEvents");
+
+  if (!chartRows.length) {
+    svg.innerHTML = "";
+    info.textContent = "还没有日志";
+    evBox.textContent = "—";
+    return;
+  }
+
+  const color = emoColor(curEmo);
+  const vals = chartRows.map(r => (r.her || {})[curEmo] || 0);
+  const W = 860, H = 300, L = 40, R = 14, T = 16, B = 34;
+  const n = vals.length;
+  const x = i => L + (n === 1 ? 0 : i / (n - 1)) * (W - L - R);
+  const y = v => H - B - (v / 100) * (H - T - B);
+
+  info.textContent = `共 ${chartRows.filter(r => !r.live).length} 条 · 最高 ${Math.max(...vals).toFixed(1)} · ` +
+                     `当前 ${vals[n - 1].toFixed(1)}` + (chartRows[n - 1].live ? "（含实时点）" : "");
+
+  let s = "";
+  for (let i = 0; i <= 4; i++) {
+    const v = i * 25, yy = y(v);
+    s += `<line x1="${L}" y1="${yy}" x2="${W - R}" y2="${yy}" stroke="#242c35"/>`;
+    s += `<text x="${L - 6}" y="${yy + 4}" fill="#8b98a5" font-size="10" text-anchor="end">${v}</text>`;
+  }
+  const pts = vals.map((v, i) => [x(i), y(v)]);
+  // "底"线：只有日志里带 parts 的点才画（老日志没有）
+  const baseVals = chartRows.map(r => (r.parts && r.parts[curEmo]) ? r.parts[curEmo]["底"] : null);
+  const hasBase = baseVals.some(v => v !== null);
+  const isLive = !!(chartRows[n - 1] && chartRows[n - 1].live);
+  const solid = isLive ? pts.slice(0, -1) : pts;
+  const line = solid.map((p, i) => (i ? "L" : "M") + p[0] + " " + p[1]).join(" ");
+  s += `<path d="${line} L ${pts[n - 1][0]} ${H - B} L ${pts[0][0]} ${H - B} Z" fill="${color}" opacity="0.10"/>`;
+  s += `<path d="${line}" fill="none" stroke="${color}" stroke-width="2"/>`;
+  if (hasBase) {
+    const bp = [];
+    baseVals.forEach((v, i) => { if (v !== null) bp.push((bp.length ? "L" : "M") + pts[i][0] + " " + y(v)); });
+    if (bp.length > 1) {
+      s += `<path d="${bp.join(" ")}" fill="none" stroke="${color}" stroke-width="1.4"
+             stroke-dasharray="5 4" opacity="0.55"/>`;
+    }
+  }
+  if (isLive) {
+    const a = pts[n - 2], b = pts[n - 1];
+    s += `<path d="M${a[0]} ${a[1]} L${b[0]} ${b[1]}" fill="none"
+           stroke="${color}" stroke-width="2" stroke-dasharray="4 3" opacity="0.75"/>`;
+    s += `<circle cx="${b[0]}" cy="${b[1]}" r="4.5" fill="#0f1216" stroke="${color}" stroke-width="2"/>`;
+  }
+
+  const big = [];
+  for (let i = 0; i < n; i++) {
+    s += `<circle cx="${pts[i][0]}" cy="${pts[i][1]}" r="2.6" fill="${color}"/>`;
+    if (i > 0 && !chartRows[i].live) {   // 实时点不算一次事件
+      const d = vals[i] - vals[i - 1];
+      if (Math.abs(d) >= 8) {
+        const up = d > 0;
+        s += `<circle cx="${pts[i][0]}" cy="${pts[i][1]}" r="5.5" fill="none"
+               stroke="${up ? '#5acfa0' : '#e2605a'}" stroke-width="1.5"/>`;
+        big.push({ t: chartRows[i].ts, text: chartRows[i].text, d: d.toFixed(1) });
+      }
+    }
+  }
+  // 时间轴：首尾 + 中间
+  [0, Math.floor(n / 2), n - 1].forEach(i => {
+    const t = (chartRows[i].ts || "").slice(11, 16) || (chartRows[i].ts || "").slice(5, 10);
+    s += `<text x="${pts[i][0]}" y="${H - B + 16}" fill="#8b98a5" font-size="10"
+           text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${t}</text>`;
+  });
+  svg.innerHTML = s;
+
+  evBox.innerHTML = big.length
+    ? "大幅变化：" + big.slice(-6).map(o =>
+        `${o.t.slice(5, 16)} <b>${o.text.slice(0, 12)}</b> ` +
+        `<span style="color:${o.d > 0 ? '#5acfa0' : '#e2605a'}">${o.d > 0 ? "+" : ""}${o.d}</span>`
+      ).join("　")
+    : "这条情绪还没有大幅变化（±8 分以上）";
+}
+
+async function refreshChart() {
+  try {
+    const d = await apiGet("log");
+    const rows = (d.rows || []).slice(0, 200);
+    chartRows = rows.slice().sort((a, b) => String(a.ts || "").localeCompare(String(b.ts || "")));
+    // 日志只记录到他说话那一刻；心跳会继续改她的状态。这里补一个"现在"的点，
+    // 让曲线右端和左边"她的状态"完全一致。
+    if (liveHer && chartRows.length) {
+      const last = chartRows[chartRows.length - 1];
+      const same = EMO7.every(k => Math.abs((last.her || {})[k] - liveHer[k]) < 0.05);
+      if (!same) chartRows.push({ ts: "现在", text: "（当前状态）", her: liveHer, live: true });
+    }
+    buildTabs();
+    drawChart();
+  } catch (e) {}
+}
+
+async function refreshInject() {
+  try {
+    const d = await apiGet("inject");
+    const on = !!d.enabled;
+    const btn = document.getElementById("injectBtn");
+    btn.textContent = on ? "已开启" : "已关闭";
+    btn.style.color = on ? "#5acfa0" : "#8b98a5";
+    btn.style.borderColor = on ? "#5acfa0" : "var(--line)";
+    btn.dataset.on = on ? "1" : "0";
+  } catch (e) {}
+}
+
+document.getElementById("injectBtn").onclick = async () => {
+  const cur = document.getElementById("injectBtn").dataset.on === "1";
+  const btn = document.getElementById("injectBtn");
+  btn.textContent = "…";
+  try {
+    const d = await apiPost("inject", { enabled: !cur });
+    btn.dataset.on = d.enabled ? "1" : "0";
+    await refreshInject();
+  } catch (e) { await refreshInject(); }
+};
+
+async function refreshUmos() {
+  try {
+    const d = await apiGet("sessions");
+    const list = (d && d.sessions) || [];
+    const box = document.getElementById("umos");
+    if (!list.length) { box.innerHTML = '<span style="color:var(--dim);font-size:12px">暂无会话</span>'; return; }
+    if (!CUR_UMO || !list.some(x => x.umo === CUR_UMO)) {
+      CUR_UMO = list[0].umo;
+      _lsSet("emo_umo", CUR_UMO);
+    }
+    box.innerHTML = list.map(x => {
+      const on = x.umo === CUR_UMO;
+      const name = x.label || x.umo;
+      return `<button data-umo="${x.umo}" class="umoChip" style="cursor:pointer;
+        border:1px solid ${on ? "#5acfa0" : "var(--line)"};
+        background:${on ? "rgba(90,207,160,.12)" : "#1e2630"};
+        color:${on ? "#5acfa0" : "var(--text)"};
+        border-radius:8px;padding:5px 12px;font-size:13px">
+        ${name} <span style="color:var(--dim);font-size:11px">· ${x.dominant || "-"} · ${x.turns}轮</span>
+      </button>`;
+    }).join("");
+    box.querySelectorAll(".umoChip").forEach(el => {
+      el.onclick = () => {
+        CUR_UMO = el.dataset.umo;
+        _lsSet("emo_umo", CUR_UMO);
+        refreshAll();
+      };
+    });
+  } catch (e) {}
+}
+
+function refreshAll() {
+  const jobs = [refreshUmos, refreshInject, refreshState, refreshSummary, refreshLog, refreshChart];
+  for (const fn of jobs) {
+    try { fn(); } catch (e) { console.error("panel:", e); }
+  }
+}
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>
+
+
+
+
+
+
