@@ -60,7 +60,8 @@ except Exception:  # 作为脚本直接加载
     _spec.loader.exec_module(engine)  # type: ignore
 
 PLUGIN_ID = "astrbot_plugin_emotion_v2"
-VERSION = "3.1.0"
+VERSION = "3.2.0"
+STATE_VERSION = 2       # 2 = 模糊层 0~100；1（或缺失）= 0~10，加载时自动 ×10
 
 REJECT_SIGNAL = ("讨厌你", "不喜欢你了", "不想跟你说话", "不想理你", "恨你", "走开",
                  "离我远点", "你走吧", "腻了", "别联系")
@@ -231,7 +232,12 @@ class EmotionV2(Star):
                 h.you_base = d.get("you_base", 0.0)
                 h.you_pulse = d.get("you_pulse", 0.0)
                 h.fear_ledger = d.get("fear_ledger", [])
-                s.fuzzy.v.update(d.get("fuzzy", {}))
+                # 模糊层 0~10 → 0~100 迁移（2026-11-01）：旧存档的最大值不超过 10
+                _fz = d.get("fuzzy", {}) or {}
+                _fz_max = max((float(x or 0) for x in _fz.values()), default=0.0)
+                if _fz and _fz_max <= 10.0:
+                    _fz = {k: float(v or 0) * 10.0 for k, v in _fz.items()}
+                s.fuzzy.v.update(_fz)
                 try:
                     s.mem_seen = {str(k): float(v)
                                   for k, v in (d.get("mem_seen") or {}).items()}
@@ -271,7 +277,7 @@ class EmotionV2(Star):
         self._dirty += 1
         if not force and self._dirty % 5:
             return
-        out = {"updated": time.time(), "sessions": {}}
+        out = {"updated": time.time(), "state_version": STATE_VERSION, "sessions": {}}
         for umo, s in self.sessions.items():
             h = s.her
             out["sessions"][umo] = {
@@ -457,9 +463,9 @@ class EmotionV2(Star):
                 try:
                     _h = out["her"]
                     _dom = out.get("dominant", "")
-                    _emo = " ".join(f"{k}{_h[k]:.0f}" for k in ("喜", "怒", "哀", "乐", "惧", "思", "忧")
+                    _emo = " ".join(f"{k}{_h[k]:.1f}" for k in ("喜", "怒", "哀", "乐", "惧", "思", "忧")
                                     if _h.get(k, 0) >= 5)
-                    _fz = "、".join(k for k, v in out["fuzzy"].items() if v >= 3)
+                    _fz = "、".join(k for k, v in out["fuzzy"].items() if v >= 30)
                     _lines = ["", "【她此刻的状态（内部，不要直接说出来）】"]
                     if _emo:
                         _lines.append(f"情绪：{_emo}")
@@ -579,7 +585,7 @@ class EmotionV2(Star):
         lab = out["judge"]["label"]
         if lab in ("威胁", "厌弃", "安抚"):
             return False
-        if out["fuzzy"].get("不确定", 0) >= 7:
+        if out["fuzzy"].get("不确定", 0) >= 70:
             return True
         if out.get("negation_hint"):
             return True

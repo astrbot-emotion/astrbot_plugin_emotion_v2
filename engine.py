@@ -27,7 +27,13 @@ HARD_STRONG = re.compile(r"^(你开心就好|随便你|随你|呵呵|无所谓)[
 HARD_WEAK = re.compile(r"^(行|好|算了|随便)[！!。…\s]*$")
 
 SELF_NEG = ("我不行", "没意思", "无所谓", "反正也没用", "算了", "没什么用", "做不到")
-WEAK = ("难受", "累", "想哭", "撑不住", "委屈", "孤独", "没力气", "舍不得", "心疼")
+WEAK = ("难受", "累", "想哭", "撑不住", "委屈", "孤独", "没力气", "舍不得", "心疼",
+        "痛苦", "煎熬", "崩溃", "绝望", "无助", "压抑", "心累", "堵得慌", "受不了",
+        "不在了", "走了", "没了")
+# 疼痛/哭泣类：这些词本身没说"难过"，但都在说"我不好受"
+PAIN = ("痛", "疼", "哭", "呜呜", "呜咽", "抽泣", "伤口", "截肢", "断口", "幻肢")
+# 安慰语境：出现这些时，上面那组不计为"他难受"
+COMFORT = ("别哭", "不要哭", "不用哭", "别难过", "不要难过", "别疼", "心疼你", "乖")
 QUIET = ("嗯", "哦", "嗯嗯", "哦哦")
 ATTACK = ("闭嘴", "滚", "烦死", "凭什么")
 
@@ -418,6 +424,44 @@ def context_checks(s: str, prev_texts=None, probe_streak: int = 0) -> dict:
     return out
 
 
+EMO7 = ("喜", "怒", "哀", "乐", "惧", "思", "忧")
+LEX_MARGIN = 0.10     # 词义要压过语义，必须比它高这么多
+
+
+def arbitrate_per_emotion(lex: dict, sem: dict, ctx: dict | None = None) -> tuple[dict, list]:
+    """七个情绪逐一对照：每个情绪独立裁决，不再只争一个 label。
+
+    原则：语义是强证据（结构规则），词义是弱证据（关键词）。
+    词义想赢，必须明显更强。
+    """
+    ctx = ctx or {}
+    out: dict[str, float] = {}
+    log: list[dict] = []
+    for e in EMO7:
+        l = float(lex.get(e, 0.0) or 0.0)
+        sv = float(sem.get(e, 0.0) or 0.0)
+        why = ""
+        if sv <= 0 and l <= 0:
+            continue
+        if sv <= 0:
+            out[e], why = l, "只有词义"
+        elif l <= 0:
+            out[e], why = sv, "只有语义"
+        else:
+            c = ctx.get(e, (0, ""))
+            if c[0] > 0:
+                out[e], why = sv, f"语境认可语义·{c[1]}"
+            elif c[0] < 0:
+                out[e], why = l, f"语境否决语义·{c[1]}"
+            elif l >= sv + LEX_MARGIN:
+                out[e], why = l, f"词义明显更强(差{l - sv:.2f})"
+            else:
+                out[e], why = sv, "语义优先"
+        log.append({"情绪": e, "词义": round(l, 2), "语义": round(sv, 2),
+                    "采用": round(out[e], 2), "理由": why})
+    return out, log
+
+
 def arbitrate(lex: dict, sem: dict, ctx: dict) -> tuple[str, float, dict]:
     """词义 vs 语义 vs 语境。返回 (采用的情绪, 分数, 决策日志)。"""
     def top(d):
@@ -524,7 +568,8 @@ def score_sorrow(s: str, recent_topics: list[set[str]], hour: int | None) -> tup
         v, why = 0.20, "拖省略"
     if fuzzy_contains(t, SELF_NEG) and not is_probe(t):
         v, why = max(v, 0.45), "自我否定"
-    if fuzzy_contains(t, WEAK):
+    _comfort = any(k in t for k in COMFORT)
+    if fuzzy_contains(t, WEAK) or (any(k in t for k in PAIN) and not _comfort):
         v, why = max(v, 0.45), "示弱"
     cur = topics(t)
     same = sum(1 for p in recent_topics if cur & p)
@@ -582,10 +627,10 @@ def adjust(s: str, sc: dict) -> dict:
     if CARE.search(s) and not (_w2 > 0 and _future_ev2):
         for k in ("哀", "惧", "怒"):
             out[k] = round(out.get(k, 0.0) * 0.3, 2)
-        out["喜"] = min(1.0, out.get("喜", 0.0) + 0.32)
+        out["喜"] = max(out.get("喜", 0.0), 0.32)      # 非累加：取强，不叠加
     if any(p in s for p in PROMISE):
-        out["喜"] = min(1.0, out.get("喜", 0.0) + 0.32)
-        out["乐"] = min(1.0, out.get("乐", 0.0) + 0.10)
+        out["喜"] = max(out.get("喜", 0.0), 0.32)
+        out["乐"] = max(out.get("乐", 0.0), 0.10)
     if any(c in s for c in CHECK):
         out["惧"] = max(out.get("惧", 0.0), 0.30)
     return out
@@ -719,7 +764,7 @@ class Fuzzy:
         self.v = {w: 0 for w in FUZZY_WORDS}
 
     def _up(self, k: str) -> None:
-        self.v[k] = min(10, self.v[k] + GAIN[k])
+        self.v[k] = min(100, self.v[k] + GAIN[k] * FUZZY_UNIT)
 
     def update(self, text: str, flags: dict, hour: int | None = None) -> dict:
         t = text
@@ -754,7 +799,7 @@ class Fuzzy:
         if any(k in t for k in FUTURE):
             self._up("期待")
         if any(k in t for k in LETGO):
-            if self.v["期待"] >= 3:
+            if self.v["期待"] >= 3 * FUZZY_UNIT:
                 self._up("失落"); self.v["期待"] //= 2
             self._up("别扭")
         if any(k in t for k in TIRED):
@@ -764,9 +809,10 @@ class Fuzzy:
         if any(k in t for k in SOOTHE_F):
             self._up("释然")
             for k in ("不安", "委屈"):
-                self.v[k] = max(0, self.v[k] - 3)
+                self.v[k] = max(0, self.v[k] - 3 * FUZZY_UNIT)
         if hour is not None and (hour >= 23 or hour <= 5):
-            self._up("倦")
+            # 深夜只是"有点困"，不该把语气压死：涨得慢、最多到 6
+            self.v["倦"] = min(60, self.v["倦"] + 20)
 
         amb = 0
         top_v = flags.get("top_v")
@@ -777,12 +823,12 @@ class Fuzzy:
             amb += 3
         if flags.get("tricky"):
             amb += 3
-        self.v["不确定"] = min(10, amb)
+        self.v["不确定"] = min(100, amb * FUZZY_UNIT)
 
         snap = dict(self.v)
         for k in FUZZY_WORDS:
             if k != "不确定":
-                self.v[k] = max(0, self.v[k] - 1)
+                self.v[k] = max(0, self.v[k] - 1 * FUZZY_UNIT)
         return snap
 
     def to_dict(self) -> dict:
@@ -830,6 +876,7 @@ FUZZY_TO_EMO = {
     "别扭": {"怒": 0.2},
 }
 
+FUZZY_UNIT = 10.0      # 模糊层刻度：内部 0~100，表格仍用 0~10 单位（×10 写入，÷10 读出）
 F2E_EMO_CAP = 20.0      # 单轮单个情绪上限（防止一句话打满）
 
 
@@ -859,10 +906,10 @@ def emotion_from_fuzzy(fuzzy_state: dict) -> dict:
             v = float(val)
         except Exception:
             continue
-        if v <= 0.2:
+        if v <= 0.2 * FUZZY_UNIT:
             continue
         for emo, coef in FUZZY_TO_EMO.get(word, {}).items():
-            out[emo] = out.get(emo, 0.0) + coef * v
+            out[emo] = out.get(emo, 0.0) + coef * v / FUZZY_UNIT
     return out
 
 
@@ -886,29 +933,38 @@ class Her:
         self.ju_pulse = 0.0
         self.si_base = 0.0      # 思：放不下（对象占据注意力）
         self.si_pulse = 0.0
+        self.si_hold = 0.0      # 惦记：在意/他反复提同一件事，短命、封顶 20
+        self.talk_minutes = 0.0 # 累计对话时长（分钟），决定思底与安抚强度
         self.you_base = 0.0     # 忧：担心还没发生的事
         self.you_pulse = 0.0
         self.fail_streak = 0
         self.fear_ledger: list[dict] = []
 
     # ---- 事件 ----
+    def gain(self, cur: float, cap: float, amount: float) -> float:
+        """带剩余空间的增益：越接近上限，同样的刺激加得越少。负增量原样放行。"""
+        if amount <= 0:
+            return amount
+        room = 1.0 - (cur / cap if cap > 0 else 1.0)
+        return amount * max(0.0, room)
+
     def his_joy(self, v: float) -> None:
         amp = self.xi_amp
-        self.le = min(90, self.le + v * 8 * amp)
+        self.le = min(90, self.le + self.gain(self.le, 90, v * 8 * amp))
         gain = v * 25 * max(0.0, 1 - (self.xi_base + self.xi_pulse) / 95) * amp
         self.xi_pulse = min(95, self.xi_pulse + gain)
         self.xi_base = min(95, self.xi_base + 0.1 + (0.5 if v > 0.4 else 0))
 
     def his_sad(self, v: float) -> None:
-        self.ai_pulse = min(100, self.ai_pulse + v * 7 * self.xi_amp)
-        self.ai_base = min(90, self.ai_base + 0.5)
+        self.ai_pulse = min(100, self.ai_pulse + self.gain(self.ai_pulse, 100, v * 7 * self.xi_amp))
+        self.ai_base = min(90, self.ai_base + self.gain(self.ai_base, 90, 0.5))
         self.le = max(0, self.le - v * 3)
         self.xi_pulse *= 0.92
 
     def harm_to_her(self, sev: float) -> None:
-        self.ju_pulse = min(100, self.ju_pulse + sev * 63 * self.xi_amp)
-        self.ju_base = max(2.0, min(95, self.ju_base + sev * 8 * self.xi_amp))
-        self.nu_pulse = min(100, self.nu_pulse + sev * 10 * self.xi_amp)
+        self.ju_pulse = min(100, self.ju_pulse + self.gain(self.ju_pulse, 100, sev * 63 * self.xi_amp))
+        self.ju_base = max(2.0, min(95, self.ju_base + self.gain(max(0.0, self.ju_base - 2.0), 93.0, sev * 8 * self.xi_amp)))
+        self.nu_pulse = min(100, self.nu_pulse + self.gain(self.nu_pulse, 100, sev * 10 * self.xi_amp))
         self.xi_pulse *= 0.92
         self.fear_ledger.append({"sev": round(sev, 2), "at": None})
 
@@ -946,6 +1002,22 @@ class Her:
     HL_YOU = 12 * 3600       # 忧·底 12 小时
     HL_YOUP = 2 * 3600       # 忧·冲 2 小时
 
+    # ---- 负面衰减与安抚（v11.8，系数均按三位小数微调）----
+    LE_PULSE_AI = 0.317      # 乐冲满 100 时，哀冲半衰期缩短 31.7%
+    CALM_AI_BASE = 0.021     # 平静消息：哀冲每轮 -2.1%
+    CALM_AI_PER_AB = 0.00052 # 哀底每 1 点，再快 0.052%
+    CALM_AI_FLOOR = 0.601    # 平静最多压到 60.1%
+    SOOTHE_FLOOR = 0.618     # 安抚基础强度（1.0 = 不抑制）
+    SOOTHE_PER_MIN = 0.00027 # 对话每多 1 分钟，安抚再强 0.027%
+    SOOTHE_MIN = 0.348       # 安抚最强到 34.8%
+    SOOTHE_RISE_CAP = 2.500  # 单条涨幅超过 2.5 就触发安抚
+    SOOTHE_BASE_MAX = 0.500  # 安抚起效时每条最多降底 0.5
+    SOOTHE_BASE_AI = 0.603   # 哀底只按忧底的 60.3% 降
+    YOU_BY_XI = 0.483        # 忧涨幅中由喜决定的部分（喜 95 时满额）
+    SI_TALK_PER_MIN = 0.061  # 思底随对话时长：每分钟 0.061
+    SI_TALK_MAX = 60.000     # 思底由时长决定的上限
+    SI_TALK_PULL = 0.019     # 向目标靠拢的比例
+
     def step(self, dt_seconds: float = 60.0, le_base: float = 55.0) -> None:
         # 按真实间隔衰减：不再有 60 秒下限，连发消息不会被多扣
         dt = max(1.0, min(float(dt_seconds or 0.0), 7 * 86400.0))
@@ -956,11 +1028,18 @@ class Her:
         self.xi_pulse *= fac(self.HL_XI)
         self.nu_pulse *= fac(self.HL_NU)
         self.nu_harm *= fac(self.HL_HARM)
-        self.ai_pulse *= fac(self.HL_AI)
+        # 乐·当下越亮，哀·当下掉得越快（以乐冲为主）
+        _le_boost = 1.0 + self.LE_PULSE_AI * min(1.0, self.le_pulse / 100.0)
+        self.ai_pulse *= fac(self.HL_AI) ** _le_boost
         self.ju_pulse *= fac(self.HL_JU)
         self.le_pulse *= fac(30 * 60)      # 乐·当下 30 分钟
         self.si_base *= fac(self.HL_SI)
+        # 思·底由「累计对话时长」决定
+        _si_t = min(self.SI_TALK_MAX, self.SI_TALK_PER_MIN * self.talk_minutes)
+        self.si_base += (_si_t - self.si_base) * self.SI_TALK_PULL
         self.si_pulse *= fac(self.HL_SIP)
+        self.si_hold *= fac(2 * 3600)
+        self.si_hold = min(20.0, self.si_hold)
         self.you_base *= fac(self.HL_YOU)
         self.you_pulse *= fac(self.HL_YOUP)
         self.nu_base *= fac(self.HL_NUB)
@@ -1003,7 +1082,7 @@ class Her:
             "哀": round(min(95, self.ai_base + self.ai_pulse), 1),
             "乐": round(min(100, self.le + self.le_pulse), 1),
             "惧": round(min(95, self.ju_base + self.ju_pulse), 1),
-            "思": round(min(100, self.si_base + self.si_pulse), 1),
+            "思": round(min(100, self.si_base + self.si_pulse + self.si_hold), 1),
             "忧": round(min(95, self.you_base + self.you_pulse), 1),
         }
 
@@ -1016,7 +1095,7 @@ class Her:
             "哀": {"底": round(self.ai_base, 1), "冲": round(self.ai_pulse, 1)},
             "乐": {"底": round(self.le, 1), "冲": round(self.le_pulse, 1)},
             "惧": {"底": round(self.ju_base, 1), "冲": round(self.ju_pulse, 1)},
-            "思": {"底": round(self.si_base, 1), "冲": round(self.si_pulse, 1)},
+            "思": {"底": round(self.si_base + self.si_hold, 1), "冲": round(self.si_pulse, 1)},
             "忧": {"底": round(self.you_base, 1), "冲": round(self.you_pulse, 1)},
         }
 
@@ -1139,15 +1218,15 @@ def tone_spec(her: Her, fz: dict, judge: dict | None = None, like: float = 55.0)
     neg = max(her.ai_base + her.ai_pulse, fear_v) / 100
     angry = (her.nu_base + her.nu_pulse) / 100
     warm = (like - 20) / 45                      # 长期亲近度：让"平静"也分两种
-    w = {k: fz.get(k, 0) / 10 for k in fz}
+    w = {k: fz.get(k, 0) / 100 for k in fz}
     label = str(judge.get("label", "平静"))
     strength = float(judge.get("strength", 0) or 0)
     question = bool(judge.get("question"))
 
     # ---- 原有五项（情绪系数放大 25%，并叠亲近度）----
     t["软硬"] = clamp(t["软硬"] + 0.85 * neg - 0.95 * angry)
-    t["玩笑"] = clamp(t["玩笑"] + 0.38 * joy + 0.12 * warm - 0.85 * neg)
-    t["语气词"] = clamp(t["语气词"] + 0.62 * joy + 0.10 * warm - 0.70 * w.get("倦", 0))
+    t["玩笑"] = clamp(t["玩笑"] + 0.382 * joy + 0.118 * warm - 0.85 * neg)
+    t["语气词"] = clamp(t["语气词"] + 0.617 * joy + 0.103 * warm - 0.10 * w.get("倦", 0))
     t["称呼"] = clamp(t["称呼"] + 0.62 * joy + 0.12 * warm - 0.60 * w.get("疏离", 0))
     t["主动性"] = clamp(t["主动性"]
                         + 0.35 * (1 if question else 0)      # 他问了 → 她会接
@@ -1156,16 +1235,16 @@ def tone_spec(her: Her, fz: dict, judge: dict | None = None, like: float = 55.0)
                         - 0.45 * w.get("别扭", 0))
 
     # ---- 新增五项 ----
-    t["句长"] = clamp(t["句长"] + 0.55 * joy + 0.12 * warm - 0.60 * neg - 0.35 * angry
-                      - 0.45 * w.get("倦", 0))
-    t["连发"] = clamp(t["连发"] + 0.42 * joy + 0.08 * warm - 0.45 * neg - 0.22 * w.get("倦", 0))
+    t["句长"] = clamp(t["句长"] + 0.548 * joy + 0.121 * warm - 0.60 * neg - 0.35 * angry
+                      - 0.06 * w.get("倦", 0))
+    t["连发"] = clamp(t["连发"] + 0.417 * joy + 0.082 * warm - 0.45 * neg - 0.03 * w.get("倦", 0))
     t["反问"] = clamp(t["反问"] + 0.55 * (w.get("在意", 0) + w.get("好奇", 0)) / 2
                       + 0.35 * w.get("试探", 0) - 0.50 * w.get("别扭", 0) - 0.45 * angry)
-    t["省略号"] = clamp(t["省略号"] + 0.70 * w.get("委屈", 0) + 0.55 * w.get("别扭", 0)
+    t["省略号"] = clamp(t["省略号"] + 0.703 * w.get("委屈", 0) + 0.548 * w.get("别扭", 0)
                         + 0.45 * neg - 0.60 * joy)
 
     # ---- 沉默 ----
-    sil = 0.55 * w.get("别扭", 0) + 0.28 * w.get("倦", 0) + 0.30 * neg
+    sil = 0.55 * w.get("别扭", 0) + 0.04 * w.get("倦", 0) + 0.30 * neg
     if label == "威胁":
         sil += 0.06 * strength          # 判断层只做轻微修正
     if label == "厌弃":
@@ -1375,21 +1454,33 @@ class Session:
             return {}
         self.hb_silence += dt_minutes
 
+        # 累计对话时长（心跳按实际时长累计，单步最多 60 分钟）
+        self.her.talk_minutes += min(max(float(dt_minutes or 0.0), 0.0), 60.0)
+
         xi_before = min(95.0, self.her.xi_base + self.her.xi_pulse)
         dt = dt_minutes * 60.0
         f_le = 0.5 ** (dt / (2 * 3600))
-        self.le_base += (55.0 - self.le_base) * (1.0 - f_le) * 0.5
+        # 回归 55 的拉力从 0.5 降到 0.15：让事件留下的痕迹更久，乐才有区分度
+        _le_target = max(30.0, min(78.0, 40.0 + 0.4 * xi_before))
+        self.le_base += (_le_target - self.le_base) * (1.0 - f_le) * 0.15
         neg_push = max(self.her.ai_base + self.her.ai_pulse,
                        self.her.ju_base + self.her.ju_pulse) / 100.0
         if neg_push > 0.2:
             self.le_base -= 0.8 * neg_push * min(dt / 3600.0, 3.0)
-        self.le_base = max(30.0, min(75.0, self.le_base))
+        self.le_base = max(30.0, min(78.0, self.le_base))
         self.her.step(dt, self.le_base)
+        # 衰减后的基线：安抚只能压「涨幅」，不能凭空降值
+        _neg0 = {"ai_pulse": self.her.ai_pulse,
+                 "you_pulse": self.her.you_pulse,
+                 "ju_pulse": self.her.ju_pulse}
 
         # 思：按"他离开时的喜"缓慢积累
+        # 忧的涨幅由「喜」决定：关系越好，越容易替对方担心
+        _you_k = self.her.YOU_BY_XI + (1.0 - self.her.YOU_BY_XI) * min(1.0, xi_before / 95.0)
+
         si_scale = max(0.0, min(1.0, (xi_before - 35.0) / 65.0))
         if si_scale > 0:
-            self.her.si_base = min(100.0, self.her.si_base + 78.0 * si_scale * (dt_minutes / 1440.0))
+            self.her.si_base = min(100.0, self.her.si_base + self.her.gain(self.her.si_base, 100.0, 78.0 * si_scale * (dt_minutes / 1440.0)))
 
         return {
             "idle": {"minutes": round(self.hb_silence)},
@@ -1440,7 +1531,8 @@ class Session:
         # ---------- 先按真实时间衰减"旧状态"（事件必须在衰减之后叠加）----------
         dt = max(1.0, float(idle_minutes) * 60.0)
         f_le = 0.5 ** (dt / (2 * 3600))
-        self.le_base += (55.0 - self.le_base) * (1.0 - f_le) * 0.5
+        _le_t2 = max(30.0, min(78.0, 40.0 + 0.4 * min(95.0, self.her.xi_base + self.her.xi_pulse)))
+        self.le_base += (_le_t2 - self.le_base) * (1.0 - f_le) * 0.15
         neg_push = max(self.her.ai_base + self.her.ai_pulse,
                        self.her.ju_base + self.her.ju_pulse) / 100.0
         if neg_push > 0.2:
@@ -1449,7 +1541,13 @@ class Session:
             self.le_base += 0.5
         self.le_base = max(30.0, min(75.0, self.le_base))
         xi_before_decay = min(95.0, self.her.xi_base + self.her.xi_pulse)
+        # 忧的涨幅由喜决定（tick 内，必须先于所有忧的增长点）
+        _you_k = self.her.YOU_BY_XI + (1.0 - self.her.YOU_BY_XI) * min(1.0, xi_before_decay / 95.0)
         self.her.step(dt, self.le_base)
+        # 衰减后的基线：安抚只能压涨幅，不能凭空降值
+        _neg0 = {"ai_pulse": self.her.ai_pulse,
+                 "you_pulse": self.her.you_pulse,
+                 "ju_pulse": self.her.ju_pulse}
 
         # 喜对"被触发情绪"的放大：喜越高越容易被带动（不动喜和乐本身）
         xi_ref = min(95.0, self.her.xi_base + self.her.xi_pulse)
@@ -1536,10 +1634,17 @@ class Session:
             elif ARB_MODE == "loose" and _why_arb.startswith("最匹配") and _arb_score > _cur_top:
                 sc[_arb_label] = max(sc.get(_arb_label, 0.0), _arb_score)
 
-        # 语义层的标签也进多标签（用户侧要多标签，不只是一个）
-        for _k, _v in _sem.items():
-            if _v >= 0.30:
-                sc[_k] = max(sc.get(_k, 0.0), round(_v, 2))
+        # ---------- 七情绪逐一对照（v11.6）----------
+        if ARBITRATION:
+            _merged, _per_log = arbitrate_per_emotion(sc, _sem, _ctx)
+            if _merged:
+                sc = {k: round(v, 2) for k, v in _merged.items()}
+            self.last_arb = {"逐情绪": _per_log[:7]}
+        else:
+            # 语义层的标签也进多标签
+            for _k, _v in _sem.items():
+                if _v >= 0.30:
+                    sc[_k] = max(sc.get(_k, 0.0), round(_v, 2))
 
         # 求证导致的惧，不该吞掉真实的思（用户定：思是独立标签）
         if sc.get("思", 0.0) >= 0.35 and sc.get("惧", 0.0) <= 0.55:
@@ -1569,16 +1674,31 @@ class Session:
         # 用户忧主 → 她跟着担心
         if label == "忧":
             try:
-                self.her.you_pulse = min(95, self.her.you_pulse + 6 * self.her.xi_amp)
+                self.her.you_pulse = min(95, self.her.you_pulse + self.her.gain(self.her.you_pulse, 95, 6 * self.her.xi_amp * _you_k))
             except Exception:
                 pass
 
-        # 用户思主 → 智能体喜主/乐主（用户定：被想念让她高兴）
+        # 用户思主（v11.7）：先分「对人的思」和「对事的思」
         if label == "思":
             try:
-                self.her.xi_pulse = min(95, self.her.xi_pulse + 8 * self.her.xi_amp)
-                self.her.le = min(90, self.her.le + 3)
-                self.her.si_pulse = min(95, self.her.si_pulse + 8)
+                _has_event = any(k in s for k in EVENT_WORDS)
+                # 事标优先：只要提到具体的时间/事件，就算「对事的思」
+                # （"你"几乎每句都有，不能靠它一票否决）
+                if _has_event:
+                    if any(k in s for k in PAST_NEG):
+                        # 负向的过去 → 哀（悲哀）+ 忧（担心）
+                        self.her.ai_pulse = min(100, self.her.ai_pulse + self.her.gain(self.her.ai_pulse, 100, 7))
+                        self.her.you_pulse = min(95, self.her.you_pulse + self.her.gain(self.her.you_pulse, 95, 6))
+                    elif any(k in s for k in PAST_POS):
+                        # 正向的过去 → 喜（幸福感）+ 乐（满足）
+                        self.her.xi_pulse = min(95, self.her.xi_pulse + self.her.gain(self.her.xi_pulse, 95, 6 * self.her.xi_amp))
+                        self.her.le = min(90, self.her.le + 3)
+                    # 极性不明 → 不动，只保留判定层的 label
+                else:
+                    # 对人的思（或判断不出对象）：他想她 → 她高兴 + 冲
+                    self.her.xi_pulse = min(95, self.her.xi_pulse + self.her.gain(self.her.xi_pulse, 95, 8 * self.her.xi_amp))
+                    self.her.le = min(90, self.her.le + 3)
+                    self.her.si_pulse = min(95, self.her.si_pulse + self.her.gain(self.her.si_pulse, 95, 8))
             except Exception:
                 pass
 
@@ -1598,7 +1718,7 @@ class Session:
         _jf = fuzzy_from_judge(label, top_v, multi)
         for _w, _d in _jf.items():
             if _w in self.fuzzy.v:
-                self.fuzzy.v[_w] = max(0.0, min(10.0, self.fuzzy.v[_w] + _d))
+                self.fuzzy.v[_w] = max(0.0, min(100.0, self.fuzzy.v[_w] + _d * FUZZY_UNIT))
                 fz[_w] = self.fuzzy.v[_w]
 
         # ---------- 模糊层 → 情绪层 ----------
@@ -1610,19 +1730,19 @@ class Session:
                 if not _v:
                     continue
                 if _k == "喜":
-                    _h.xi_pulse = max(0.0, min(95, _h.xi_pulse + _v * _h.xi_amp))
+                    _h.xi_pulse = max(0.0, min(95, _h.xi_pulse + _h.gain(_h.xi_pulse, 95, _v * _h.xi_amp)))
                 elif _k == "乐":
-                    _h.le = max(0.0, min(90.0, _h.le + _v * 0.5))
+                    _h.le = max(0.0, min(90.0, _h.le + _h.gain(_h.le, 90.0, _v * 0.5)))
                 elif _k == "哀":
-                    _h.ai_pulse = max(0.0, min(100, _h.ai_pulse + _v))
+                    _h.ai_pulse = max(0.0, min(100, _h.ai_pulse + _h.gain(_h.ai_pulse, 100, _v)))
                 elif _k == "惧":
-                    _h.ju_pulse = max(0.0, min(100, _h.ju_pulse + _v))
+                    _h.ju_pulse = max(0.0, min(100, _h.ju_pulse + _h.gain(_h.ju_pulse, 100, _v)))
                 elif _k == "怒":
-                    _h.nu_pulse = max(0.0, min(100, _h.nu_pulse + _v))
+                    _h.nu_pulse = max(0.0, min(100, _h.nu_pulse + _h.gain(_h.nu_pulse, 100, _v)))
                 elif _k == "思":
-                    _h.si_pulse = max(0.0, min(95, _h.si_pulse + _v))
+                    _h.si_hold = min(20.0, _h.si_hold + max(0.0, _v))
                 elif _k == "忧":
-                    _h.you_pulse = max(0.0, min(95, _h.you_pulse + _v))
+                    _h.you_pulse = max(0.0, min(95, _h.you_pulse + _h.gain(_h.you_pulse, 95, _v)))
 
         # ---------- 情绪层 ----------
         sev, ttag = threat_level(s)
@@ -1650,6 +1770,12 @@ class Session:
             self.her.xi_pulse *= 0.92
             self.her.ju_base = max(2.0, min(95, self.her.ju_base + 2.0))
 
+        if label == "平静":
+            # 平静是「保底项」：不制造情绪，只让负面缓慢回落；
+            # 哀底越大，回落越快（她越难过，安静下来恢复得越明显）
+            _calm = self.her.CALM_AI_BASE + self.her.CALM_AI_PER_AB * self.her.ai_base
+            self.her.ai_pulse *= max(self.her.CALM_AI_FLOOR, 1.0 - _calm)
+
         if label == "喜":
             self.her.his_joy(top_v)
         elif label == "乐":
@@ -1657,11 +1783,11 @@ class Session:
         elif label == "哀":
             self.her.his_sad(top_v * 0.6)      # 他难受时，她以"担心"为主，难过为辅
         elif label == "惧":
-            self.her.ai_pulse = min(100, self.her.ai_pulse + top_v * 3)
+            self.her.ai_pulse = min(100, self.her.ai_pulse + self.her.gain(self.her.ai_pulse, 100, top_v * 3))
         elif label == "怒":
             # 他冲她发火：她会怕（不经委屈那层），同时委屈
-            self.her.ju_pulse = min(100, self.her.ju_pulse + 0.55 * top_v * 80)
-            self.her.ai_pulse = min(100, self.her.ai_pulse + 0.30 * top_v * 10)
+            self.her.ju_pulse = min(100, self.her.ju_pulse + self.her.gain(self.her.ju_pulse, 100, 0.55 * top_v * 80))
+            self.her.ai_pulse = min(100, self.her.ai_pulse + self.her.gain(self.her.ai_pulse, 100, 0.30 * top_v * 10))
             self.fuzzy._up("委屈")
             self.fuzzy._up("不安")
 
@@ -1675,40 +1801,41 @@ class Session:
                                        "只有你", "不能没有你"))
         if _cherish:
             # 被在乎：有人舍不得她 → 她高兴（她自己的价值判断）
-            self.her.xi_pulse = min(95, self.her.xi_pulse + 10 * self.her.xi_amp)
+            self.her.xi_pulse = min(95, self.her.xi_pulse + self.her.gain(self.her.xi_pulse, 95, 10 * self.her.xi_amp))
             self.her.xi_base = min(95, self.her.xi_base + 1.5)
         if _sep_hit:
             # 分离话题：关系不稳 → 她不安、难过
-            self.her.you_pulse = min(95, self.her.you_pulse + 4 * self.her.xi_amp)
-            self.her.you_base = min(95, self.her.you_base + 3)
-            self.her.ai_pulse = min(100, self.her.ai_pulse + 2 * self.her.xi_amp)
+            self.her.you_pulse = min(95, self.her.you_pulse + self.her.gain(self.her.you_pulse, 95, 4 * self.her.xi_amp * _you_k))
+            self.her.you_base = min(95, self.her.you_base + self.her.gain(self.her.you_base, 95, 1.5))
+            self.her.ai_pulse = min(100, self.her.ai_pulse + self.her.gain(self.her.ai_pulse, 100, 2 * self.her.xi_amp))
         if _needed:
             # 被需要 → 她高兴
-            self.her.xi_pulse = min(95, self.her.xi_pulse + 6 * self.her.xi_amp)
+            self.her.xi_pulse = min(95, self.her.xi_pulse + self.her.gain(self.her.xi_pulse, 95, 6 * self.her.xi_amp))
 
         # 被逗：乐·当下 +10（连逗能到 70-80），喜也微涨
         if any(k in s for k in JOKE):
-            self.her.le_pulse = min(25.0, self.her.le_pulse + 9.0 * self.her.xi_amp)
+            self.her.le_pulse = min(25.0, self.her.le_pulse + self.her.gain(self.her.le_pulse, 25.0, 9.0 * self.her.xi_amp))
             self.her.xi_pulse = min(95, self.her.xi_pulse + 2 * self.her.xi_amp)
 
         # 思念类：他说想你 → 喜脉冲 + 乐抬 + 思
         if any(k in s for k in MISS):
-            self.her.xi_pulse = min(95, self.her.xi_pulse + 12 * self.her.xi_amp)
+            self.her.xi_pulse = min(95, self.her.xi_pulse + self.her.gain(self.her.xi_pulse, 95, 12 * self.her.xi_amp))
             self.her.le = min(90, self.her.le + 2)
-            self.her.si_pulse = min(95, self.her.si_pulse + 10)
+            self.her.si_pulse = min(95, self.her.si_pulse + self.her.gain(self.her.si_pulse, 95, 10))
 
         # ---------- 思：放不下（以喜为基准按比例缩放）----------
         # 喜 35 以下完全不起思；喜 100 时"1 天不聊 → 思 ~70，1.5 天 → 顶"
+        # 忧的涨幅由「喜」决定（tick 内）
         si_scale = max(0.0, min(1.0, (xi_before_decay - 35.0) / 65.0))
-        if self.hb_silence <= 0 and idle_minutes >= 60 and si_scale > 0:
+        if self.hb_silence <= 0 and idle_minutes >= 20 and si_scale > 0:
             days = idle_minutes / 1440.0
-            self.her.si_base = min(100.0, self.her.si_base + 78.0 * si_scale * days)
+            self.her.si_base = min(100.0, self.her.si_base + self.her.gain(self.her.si_base, 100.0, 78.0 * si_scale * days))
         # 他的模糊感受 → 转换成她的反应
         self.his = his_fuzzy(s)
         for _k, _w in self.his.items():
             for _target, _amt in CONVERT.get(_k, {}).items():
                 if _target in self.fuzzy.v:
-                    self.fuzzy.v[_target] = min(10, self.fuzzy.v[_target] + _amt)
+                    self.fuzzy.v[_target] = min(100, self.fuzzy.v[_target] + _amt * FUZZY_UNIT)
                     fz[_target] = self.fuzzy.v[_target]
                 elif _target in ("xi", "you", "ju", "ai", "le"):
                     _h = self.her
@@ -1725,10 +1852,10 @@ class Session:
 
         # 会话特征：连续问句 → 试探；连续短句 → 疏离
         if self.q_streak >= 2:
-            self.fuzzy.v["试探"] = min(10, self.fuzzy.v["试探"] + 1)
+            self.fuzzy.v["试探"] = min(100, self.fuzzy.v["试探"] + 1 * FUZZY_UNIT)
             fz["试探"] = self.fuzzy.v["试探"]
         if self.short_streak >= 3:
-            self.fuzzy.v["疏离"] = min(10, self.fuzzy.v["疏离"] + 1)
+            self.fuzzy.v["疏离"] = min(100, self.fuzzy.v["疏离"] + 1 * FUZZY_UNIT)
             fz["疏离"] = self.fuzzy.v["疏离"]
 
         # 他又提起同一件事（回流）→ 她一直惦记着
@@ -1736,23 +1863,24 @@ class Session:
         if cur_topics and len(self.recent_topics) >= 2 and si_scale > 0:
             same = sum(1 for p in self.recent_topics if cur_topics & p)
             if same >= 2:
-                self.her.si_base = min(100.0, self.her.si_base + 3.0 * si_scale)
+                self.her.si_hold = min(20.0, self.her.si_hold + 3.0 * si_scale)
 
         # ---------- 忧：担心还没发生的事 ----------
         if fuzzy_contains(s, TIRED) or any(k in s for k in ("病了", "发烧", "感冒", "去医院", "熬夜")):
-            self.her.you_base = min(95, self.her.you_base + 14 * self.her.xi_amp)
+            self.her.you_base = min(95, self.her.you_base + self.her.gain(self.her.you_base, 95, 14 * self.her.xi_amp * _you_k))
         if hsev > 0:                                   # 他被人欺负/出事
-            self.her.you_base = min(95, self.her.you_base + 14 * self.her.xi_amp)
+            self.her.you_base = min(95, self.her.you_base + self.her.gain(self.her.you_base, 95, 14 * self.her.xi_amp))
         if HYPO_RE.search(s) and any(k in s for k in ("以后", "将来", "明天", "以后怎么办", "会不会")):
-            self.her.you_base = min(95, self.her.you_base + 6 * self.her.xi_amp)
+            self.her.you_base = min(95, self.her.you_base + self.her.gain(self.her.you_base, 95, 6 * self.her.xi_amp * _you_k))
 
         # 思 → 忧（想多了变成担心）；忧 → 惧（担心升级成怕失去）
-        si_now = self.her.si_base + self.her.si_pulse
+        si_now = self.her.si_base + self.her.si_pulse + self.her.si_hold
         if si_now > 25:
-            self.her.you_base = min(95, self.her.you_base + 0.12 * (si_now - 25))
+            # v11.8：思不再自动判为负面，原来的「思→忧」链已移除
+            pass
         you_now = self.her.you_base + self.her.you_pulse
         if you_now > 45:
-            self.her.ju_pulse = min(100, self.her.ju_pulse + 0.08 * (you_now - 45))
+            self.her.ju_pulse = min(100, self.her.ju_pulse + self.her.gain(self.her.ju_pulse, 100, 0.08 * (you_now - 45)))
 
         # 喜欢
         d_like = 0.0
@@ -1783,6 +1911,26 @@ class Session:
             "question": bool(re.search(r"[？?]|吗$|呢$|吧$", s)),
             "len_hint": round(min(len(s) / 40.0, 1.0), 2),
         }
+        # 安抚（v11.9）：只压「过强的涨幅」，但允许轻微降「底」；对话越久越有效
+        _soothe = max(self.her.SOOTHE_MIN, self.her.SOOTHE_FLOOR - self.her.SOOTHE_PER_MIN * self.her.talk_minutes)
+        # 威胁/厌弃不吃安抚：她是真的怕，不该被“哄”压住
+        _soothable = label not in ("威胁", "厌弃")
+        _soothed = False
+        if _soothable:
+            for _pa in ("ai_pulse", "you_pulse", "ju_pulse"):
+                _rise = getattr(self.her, _pa) - _neg0[_pa]
+                if _rise > self.her.SOOTHE_RISE_CAP:
+                    setattr(self.her, _pa,
+                            _neg0[_pa] + self.her.SOOTHE_RISE_CAP
+                            + (_rise - self.her.SOOTHE_RISE_CAP) * _soothe)
+                    _soothed = True
+            # 安抚真的起效时，底也掉一点（每条最多 0.500）
+            if _soothed:
+                _drop = min(self.her.SOOTHE_BASE_MAX,
+                            self.her.SOOTHE_BASE_MAX * (1.0 - _soothe))
+                self.her.you_base = max(0.0, self.her.you_base - _drop)
+                self.her.ai_base = max(0.0, self.her.ai_base - _drop * self.her.SOOTHE_BASE_AI)
+
         tone = tone_spec(self.her, fz, self.last_judge, self.like)
         return {
             "judge": {
@@ -1897,6 +2045,9 @@ def _lev1(a: str, b: str) -> bool:
     return True
 
 
+NEG_HEADS = ("不", "没", "别", "未", "无", "非")
+
+
 def fuzzy_contains(text: str, words) -> bool:
     """精确命中，或（词长≥3 时）允许 1 字误差。"""
     if not text:
@@ -1914,12 +2065,33 @@ def fuzzy_contains(text: str, words) -> bool:
                 if allow_indel:
                     spans += [(text[i:i + L - 1], L - 1), (text[i:i + L + 1], L + 1)]
                 for span, need in spans:
-                    if len(span) == need and _lev1(span, w):
+                    if len(span) != need:
+                        continue
+                    # 否定词（不/没/别/未/无/非）首字必须精确：
+                    # 否则「最喜欢你了」会被容错成「不喜欢你了」，语义直接反转
+                    if w[0] in NEG_HEADS and span[:1] != w[0]:
+                        continue
+                    if _lev1(span, w):
                         return True
     return False
 
 
 # 推开类短句：单独出现才是厌弃，带上下文就不算
+# ---- 思的对象：人 / 事（v11.7）----
+PERSON_WORDS = ("你", "我", "他", "她", "咱", "妈", "爸", "哥", "姐", "弟", "妹",
+                "爷", "奶", "姥", "外婆", "外公", "叔", "姨", "姑", "舅",
+                "朋友", "同学", "室友", "同事", "老师", "老婆", "老公", "孩子",
+                "儿子", "女儿", "宝贝", "媳妇")
+EVENT_WORDS = ("那次", "那天", "去年", "前年", "当年", "那年", "上个月", "前几天",
+               "上次", "之前", "以前", "一开始", "最初", "当时", "那时候",
+               "小时候", "后来", "从前", "过去", "刚见面", "刚认识", "第一天",
+               "吵架", "分手", "考试", "毕业", "生日", "第一次")
+# 过去事件的极性
+PAST_NEG = ("吵架", "分手", "难过", "后悔", "遗憾", "失去", "离开", "哭", "疼",
+            "错", "失望", "痛苦", "崩溃", "冷战", "闹", "生气", "伤")
+PAST_POS = ("开心", "快乐", "美好", "好玩", "有趣", "幸福", "甜", "笑", "高兴",
+            "温柔", "好看", "喜欢")
+
 PUSH_WORDS = ("你去吧", "你走吧", "走吧", "去吧", "走开", "滚吧", "离我远点")
 # 这些语境说明"去吧"是让你去忙/去休息，不是赶人
 PUSH_CTX = ("打包", "上课", "教室", "作业", "吃饭", "睡觉", "睡", "忙", "上班",

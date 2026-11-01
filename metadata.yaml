@@ -20,7 +20,7 @@ desc: |
   多会话隔离：每个对话独立计算自己的情绪，面板可切换查看。
   运行数据写在 plugin_data/astrbot_plugin_emotion_v2/，
   每天一个 JSONL 记录「他这句话被判成什么」和「她因此变成了什么情绪」。
-version: 3.1.0
+version: 3.2.0
 author: emotion-v2 contributors
 astrbot_version: ">=4.16"
 tags:
