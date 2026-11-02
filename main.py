@@ -60,7 +60,7 @@ except Exception:  # 作为脚本直接加载
     _spec.loader.exec_module(engine)  # type: ignore
 
 PLUGIN_ID = "astrbot_plugin_emotion_v2"
-VERSION = "3.2.0"
+VERSION = "3.1.0"
 STATE_VERSION = 2       # 2 = 模糊层 0~100；1（或缺失）= 0~10，加载时自动 ×10
 
 REJECT_SIGNAL = ("讨厌你", "不喜欢你了", "不想跟你说话", "不想理你", "恨你", "走开",

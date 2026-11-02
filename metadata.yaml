@@ -7,7 +7,7 @@ desc: |
     ① 判定层：对方这句话是什么情绪（多标签）
               词义 + 语义（句式结构）+ 语境（前几句）三方仲裁，
               可同时点亮多个标签（如「分离担忧」一次给出忧/思/哀/惧）
-    ② 模糊层：她"说不上来"的感受，19 个词 × 0~10
+    ② 模糊层：她"说不上来"的感受，19 个词 × 0~100
               按判定分滑动累加（滑动变量，不是阈值命中）
     ③ 情绪层：她自己的七情（喜/怒/哀/乐/惧/思/忧）
               每种拆「底」（天级）与「冲」（分钟级），会衰减、会互相压制
@@ -22,6 +22,8 @@ desc: |
   每天一个 JSONL 记录「他这句话被判成什么」和「她因此变成了什么情绪」。
 version: 3.2.0
 author: emotion-v2 contributors
+repo: https://github.com/astrbot-emotion/astrbot_plugin_emotion_v2
+social_link: https://github.com/astrbot-emotion
 astrbot_version: ">=4.16"
 tags:
   - 情绪
